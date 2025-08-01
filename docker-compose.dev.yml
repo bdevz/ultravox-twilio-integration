@@ -1,0 +1,65 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  ultravox-twilio-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use development stage if available
+    ports:
+      - "8000:8000"
+    environment:
+      # Development settings
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=console
+      - LOG_REQUEST_BODY=true
+      - LOG_RESPONSE_BODY=true
+      - ENABLE_API_DOCS=true
+      - ENABLE_METRICS_ENDPOINT=true
+      
+      # API Keys (load from .env.development)
+      - ULTRAVOX_API_KEY=${ULTRAVOX_API_KEY}
+      - ULTRAVOX_BASE_URL=${ULTRAVOX_BASE_URL:-https://api.ultravox.ai}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+      
+      # Development CORS settings
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000
+      
+      # Relaxed rate limits for development
+      - RATE_LIMIT_PER_MINUTE=120
+      - RATE_LIMIT_PER_HOUR=2000
+      - RATE_LIMIT_BURST=20
+    volumes:
+      # Mount source code for development (if using bind mounts)
+      - ./app:/app/app:ro
+      - ./tests:/app/tests:ro
+      # Mount logs directory
+      - ./logs:/app/logs
+    restart: "no"  # Don't restart automatically in development
+    command: >
+      python -m uvicorn app.main:app 
+      --host 0.0.0.0 
+      --port 8000 
+      --reload 
+      --reload-dir app 
+      --log-level debug
+    networks:
+      - ultravox-network
+
+  # Development database (if needed in future)
+  # redis:
+  #   image: redis:alpine
+  #   ports:
+  #     - "6379:6379"
+  #   networks:
+  #     - ultravox-network
+
+networks:
+  ultravox-network:
+    driver: bridge

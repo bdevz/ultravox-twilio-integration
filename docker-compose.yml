@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  ultravox-twilio-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Application settings
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      
+      # API Keys (override with your actual values)
+      - ULTRAVOX_API_KEY=${ULTRAVOX_API_KEY}
+      - ULTRAVOX_BASE_URL=${ULTRAVOX_BASE_URL:-https://api.ultravox.ai}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+      
+      # Security settings
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - MAX_CONTENT_LENGTH=${MAX_CONTENT_LENGTH:-1048576}
+    volumes:
+      # Mount logs directory for persistent logging
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ultravox-network
+
+  # Optional: Add a reverse proxy for production
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - ultravox-twilio-service
+    networks:
+      - ultravox-network
+    profiles:
+      - production
+
+networks:
+  ultravox-network:
+    driver: bridge

@@ -1,0 +1,32 @@
+# FastAPI and ASGI server
+fastapi>=0.95.0
+uvicorn[standard]>=0.20.0
+
+# HTTP client for external API calls
+aiohttp>=3.8.0
+httpx>=0.24.0
+
+# Data validation and serialization
+pydantic>=1.10.0
+pydantic-settings>=2.0.0
+
+# Twilio SDK
+twilio>=8.0.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# Logging and monitoring
+structlog>=22.0.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.20.0
+pytest-mock>=3.10.0
+factory-boy>=3.2.0
+
+# Code quality
+black>=22.0.0
+flake8>=5.0.0
+mypy>=1.0.0
+isort>=5.10.0
