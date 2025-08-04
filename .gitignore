@@ -1,3 +1,14 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.staging
+
+# API Keys and credentials
+*credentials*
+*secrets*
+*keys*
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,6 +27,7 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -23,8 +35,8 @@ share/python-wheels/
 MANIFEST
 
 # Virtual environments
-.env
-.venv
+.env/
+.venv/
 env/
 venv/
 ENV/
@@ -50,12 +62,12 @@ Thumbs.db
 # Logs
 *.log
 logs/
+log/
 
-# Environment variables
-.env.local
-.env.development
-.env.test
-.env.production
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # Testing
 .coverage
@@ -104,8 +116,16 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# pytype static type analyzer
-.pytype/
+# Debug and test files (with hardcoded credentials)
+bb-*.py
+debug-*.py
+test-*.py
+quick-*.py
+*-test.py
+*-debug.py
 
-# Cython debug symbols
-cython_debug/
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/

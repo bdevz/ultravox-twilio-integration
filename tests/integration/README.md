@@ -16,7 +16,7 @@ export TEST_ULTRAVOX_BASE_URL="https://api.ultravox.ai"  # Optional, defaults to
 
 #### Twilio API Credentials
 ```bash
-export TEST_TWILIO_ACCOUNT_SID="your_twilio_account_sid_here"
+export TEST_TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 export TEST_TWILIO_AUTH_TOKEN="your_twilio_auth_token_here"
 export TEST_TWILIO_PHONE_NUMBER="your_twilio_phone_number_here"  # Format: +1234567890
 ```

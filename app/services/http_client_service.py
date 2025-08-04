@@ -110,7 +110,7 @@ class HTTPClientService(LoggerMixin):
         data: Optional[Union[Dict[str, Any], str]] = None,
         params: Optional[Dict[str, str]] = None,
         auth_token: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> Any:
         """
         Make an HTTP request with retry logic and metrics collection.
         
@@ -390,7 +390,7 @@ class HTTPClientService(LoggerMixin):
         else:
             raise NetworkError(f"Request failed after {self.retry_config.max_retries + 1} attempts")
     
-    async def _handle_response(self, response: aiohttp.ClientResponse) -> Dict[str, Any]:
+    async def _handle_response(self, response: aiohttp.ClientResponse) -> Any:
         """
         Handle HTTP response and parse JSON.
         
@@ -398,7 +398,7 @@ class HTTPClientService(LoggerMixin):
             response: aiohttp ClientResponse
             
         Returns:
-            dict: Parsed JSON response
+            Any: Parsed JSON response (dict, list, or other JSON types)
             
         Raises:
             HTTPClientResponseError: For HTTP error responses
@@ -420,7 +420,19 @@ class HTTPClientService(LoggerMixin):
                 try:
                     error_data = json.loads(response_text) if response_text else {}
                     error_details['error_data'] = error_data
-                    error_message = error_data.get('message', f'HTTP {response.status} error')
+                    
+                    # Handle different error response formats
+                    if isinstance(error_data, dict):
+                        error_message = error_data.get('message', f'HTTP {response.status} error')
+                    elif isinstance(error_data, list) and error_data:
+                        # If it's a list, try to get the first item or convert to string
+                        first_item = error_data[0]
+                        if isinstance(first_item, dict):
+                            error_message = first_item.get('message', str(first_item))
+                        else:
+                            error_message = str(first_item)
+                    else:
+                        error_message = f'HTTP {response.status} error'
                 except json.JSONDecodeError:
                     error_message = f'HTTP {response.status} error'
                 
@@ -519,11 +531,14 @@ class HTTPClientService(LoggerMixin):
                     }
                 )
                 
+                # Ultravox uses X-API-Key header, not Bearer token
+                headers = {'X-API-Key': api_key} if api_key else {}
+                
                 result = await self.make_request(
                     method=method,
                     url=url,
                     data=data,
-                    auth_token=api_key
+                    headers=headers
                 )
                 
                 self.logger.info(

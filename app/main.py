@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.api.routes import router
 from app.error_handlers import register_exception_handlers
@@ -306,6 +308,15 @@ def create_app() -> FastAPI:
     
     # Include API routes
     app.include_router(router, prefix="/api/v1")
+    
+    # Mount static files
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+    
+    # Serve the web interface at root
+    @app.get("/")
+    async def serve_web_interface():
+        """Serve the web interface HTML file."""
+        return FileResponse("static/index.html")
     
     return app
 

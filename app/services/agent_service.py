@@ -116,19 +116,28 @@ class AgentService(LoggerMixin):
             
             ultravox_config = self._get_ultravox_config()
             
-            # Prepare agent data for Ultravox API
+            # Validate agent name format (Ultravox requirement: ^[a-zA-Z0-9_-]{1,64}$)
+            import re
+            if not re.match(r'^[a-zA-Z0-9_-]{1,64}$', config.name):
+                self.logger.error(f"Agent creation failed: invalid name format: {config.name}")
+                raise ValidationError(
+                    f"Agent name '{config.name}' is invalid. Must contain only letters, numbers, underscores, and hyphens (no spaces), max 64 characters."
+                )
+            
+            # Prepare agent data for Ultravox API (correct format)
             agent_data = {
                 "name": config.name,
-                "systemPrompt": config.prompt,
-                "voice": config.voice or "default",
-                "language": config.language or "en"
+                "callTemplate": {
+                    "systemPrompt": config.prompt,
+                    "voice": config.voice or "9dc1c0e9-db7c-46a5-a610-b04e7ebf37ee"  # Use working voice ID
+                }
             }
             
-            # Add template variables if provided
+            # Note: Template variables are handled in the prompt itself with {{variable}} syntax
+            # The language setting might not be directly supported in this API version
             if config.template_variables:
-                agent_data["templateVariables"] = config.template_variables
                 self.logger.debug(
-                    f"Agent template variables configured: {list(config.template_variables.keys())}",
+                    f"Agent template variables will be handled via prompt substitution: {list(config.template_variables.keys())}",
                     extra={"correlation_id": correlation_id}
                 )
             
@@ -348,11 +357,11 @@ class AgentService(LoggerMixin):
                 params["offset"] = str(offset)
             
             # Make API call to list agents
-            response = await self.http_client.make_request(
+            response = await self.http_client.make_ultravox_request(
                 method="GET",
-                url=f"{ultravox_config.base_url}/api/agents",
-                params=params,
-                auth_token=ultravox_config.api_key
+                endpoint="/api/agents",
+                api_key=ultravox_config.api_key,
+                base_url=ultravox_config.base_url
             )
             
             # Parse response
@@ -524,18 +533,34 @@ class AgentService(LoggerMixin):
                     details={"response_data": response_data}
                 )
             
-            # Extract agent configuration
+            # Extract agent configuration (Ultravox API structure)
+            call_template = response_data.get("callTemplate", {})
+            
+            # Handle agent name - ensure it's not empty
+            agent_name = response_data.get("name", "").strip()
+            if not agent_name:
+                agent_name = f"Agent-{parsed_agent_id[:8]}"  # Fallback name
+            
+            # Handle prompt - ensure it's within validation limits
+            raw_prompt = call_template.get("systemPrompt", "").strip()
+            if not raw_prompt:
+                agent_prompt = "Default AI assistant prompt"  # Fallback prompt
+            elif len(raw_prompt) > 10000:
+                agent_prompt = raw_prompt[:9997] + "..."  # Truncate long prompts
+            else:
+                agent_prompt = raw_prompt
+            
             config = AgentConfig(
-                name=response_data.get("name", ""),
-                prompt=response_data.get("systemPrompt", ""),
-                voice=response_data.get("voice", "default"),
-                language=response_data.get("language", "en"),
+                name=agent_name,
+                prompt=agent_prompt,
+                voice=call_template.get("voice", "default"),
+                language=response_data.get("language", "en"),  # May not be in API response
                 template_variables=response_data.get("templateVariables", {})
             )
             
-            # Extract timestamps
-            created_at = self._parse_timestamp(response_data.get("createdAt"))
-            updated_at = self._parse_timestamp(response_data.get("updatedAt"))
+            # Extract timestamps (Ultravox API uses "created" not "createdAt")
+            created_at = self._parse_timestamp(response_data.get("created"))
+            updated_at = self._parse_timestamp(call_template.get("updated"))
             
             # Extract status
             status_str = response_data.get("status", "active").lower()

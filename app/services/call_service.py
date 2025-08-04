@@ -11,6 +11,19 @@ from app.models.call import CallRequest, CallResult, TwilioCallResult, CallStatu
 from app.services.config_service import ConfigService
 from app.services.http_client_service import HTTPClientService, HTTPClientError
 
+# ElevenLabs imports (optional)
+try:
+    from app.models.elevenlabs import (
+        ElevenLabsCallRequest,
+        ElevenLabsConversationalCallRequest,
+        ElevenLabsCallResult,
+        UnifiedCallRequest
+    )
+    from app.services.elevenlabs_conversation_service import ElevenLabsConversationService
+    ELEVENLABS_AVAILABLE = True
+except ImportError:
+    ELEVENLABS_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +50,88 @@ class TwilioCallError(CallServiceError):
 class CallService:
     """Service for orchestrating calls between Ultravox and Twilio."""
     
-    def __init__(self, config_service: ConfigService, http_client: HTTPClientService):
+    def __init__(
+        self, 
+        config_service: ConfigService, 
+        http_client: HTTPClientService,
+        elevenlabs_conversation_service: Optional['ElevenLabsConversationService'] = None
+    ):
         """
         Initialize call service.
         
         Args:
             config_service: Configuration service instance
             http_client: HTTP client service instance
+            elevenlabs_conversation_service: ElevenLabs conversation service (optional)
         """
         self.config_service = config_service
         self.http_client = http_client
+        self.elevenlabs_conversation_service = elevenlabs_conversation_service
     
+    async def initiate_unified_call(
+        self, 
+        agent_id: str, 
+        phone_number: str, 
+        agent_type: str,
+        template_context: Optional[Dict[str, Any]] = None
+    ) -> CallResult:
+        """
+        Route call based on agent type.
+        
+        Args:
+            agent_id: Agent ID to use for the call
+            phone_number: Phone number to call
+            agent_type: Type of agent ("ultravox" or "elevenlabs")
+            template_context: Template context variables
+            
+        Returns:
+            CallResult: Call result
+            
+        Raises:
+            CallServiceError: For call orchestration errors
+        """
+        correlation_id = get_correlation_id()
+        
+        self.logger.info(
+            f"Initiating unified call with {agent_type} agent",
+            extra={
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "phone_number": phone_number,
+                "correlation_id": correlation_id
+            }
+        )
+        
+        if agent_type == "ultravox":
+            # Create Ultravox call request
+            call_request = CallRequest(
+                agent_id=agent_id,
+                phone_number=phone_number,
+                template_context=template_context or {}
+            )
+            return await self.initiate_call(call_request)
+            
+        elif agent_type == "elevenlabs":
+            if not ELEVENLABS_AVAILABLE or not self.elevenlabs_conversation_service:
+                raise CallServiceError(
+                    "ElevenLabs conversational AI is not available",
+                    details={"agent_type": agent_type}
+                )
+            
+            # Create ElevenLabs conversational call
+            elevenlabs_request = ElevenLabsConversationalCallRequest(
+                phone_number=phone_number,
+                agent_id=agent_id,
+                template_context=template_context or {}
+            )
+            return await self._initiate_elevenlabs_conversational_call(elevenlabs_request)
+            
+        else:
+            raise CallServiceError(
+                f"Unknown agent type: {agent_type}",
+                details={"agent_type": agent_type, "supported_types": ["ultravox", "elevenlabs"]}
+            )
+
     async def initiate_call(self, call_request: CallRequest) -> CallResult:
         """
         Initiate a call by getting join URL from Ultravox and creating Twilio call.
@@ -302,12 +386,10 @@ class CallService:
             ultravox_config = self.config_service.get_ultravox_config()
             twilio_config = self.config_service.get_twilio_config()
             
-            # Prepare request payload
+            # Prepare request payload (Ultravox expects empty twilio object)
             payload = {
                 "medium": {
-                    "twilio": {
-                        "phoneNumber": twilio_config.phone_number
-                    }
+                    "twilio": {}
                 }
             }
             
@@ -457,6 +539,419 @@ class CallService:
         logger.debug("Created TwiML for streaming configuration")
         return twiml
     
+    async def create_elevenlabs_call(self, elevenlabs_request, audio_file_path: str) -> CallResult:
+        """
+        Create an ElevenLabs call by uploading audio and creating Twilio call.
+        
+        Args:
+            elevenlabs_request: ElevenLabs call request
+            audio_file_path: Path to generated audio file
+            
+        Returns:
+            CallResult: Call result with SID and status
+            
+        Raises:
+            CallServiceError: For call creation errors
+        """
+        from app.metrics import record_metric
+        from app.logging_config import get_correlation_id
+        
+        correlation_id = get_correlation_id()
+        start_time = datetime.now(timezone.utc)
+        call_id = None
+        
+        try:
+            logger.info(
+                f"Creating ElevenLabs call to {elevenlabs_request.phone_number}",
+                extra={
+                    "phone_number": elevenlabs_request.phone_number,
+                    "voice_id": elevenlabs_request.voice_id,
+                    "text_length": len(elevenlabs_request.text),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            # Record call initiation attempt
+            record_metric(
+                "elevenlabs_call_attempts_total",
+                1,
+                tags={"voice_id": elevenlabs_request.voice_id},
+                correlation_id=correlation_id
+            )
+            
+            # Step 1: Upload audio to a publicly accessible location
+            # For now, we'll use a simple approach with Twilio's media capabilities
+            logger.debug("Step 1: Creating Twilio call with audio playback")
+            twilio_call_start = datetime.now(timezone.utc)
+            
+            # Create TwiML that plays the audio file
+            # Note: In production, you'd want to upload the audio to a CDN or cloud storage
+            # For now, we'll create a simple playback TwiML
+            twiml = self._create_audio_playback_twiml(audio_file_path)
+            
+            # Get Twilio configuration
+            twilio_config = self.config_service.get_twilio_config()
+            
+            # Prepare Twilio API request
+            payload = {
+                "To": elevenlabs_request.phone_number,
+                "From": twilio_config.phone_number,
+                "Twiml": twiml
+            }
+            
+            # Make API call to Twilio
+            endpoint = f"2010-04-01/Accounts/{twilio_config.account_sid}/Calls.json"
+            response = await self.http_client.make_twilio_request(
+                method="POST",
+                endpoint=endpoint,
+                data=payload,
+                account_sid=twilio_config.account_sid,
+                auth_token=twilio_config.auth_token
+            )
+            
+            twilio_call_duration = (datetime.now(timezone.utc) - twilio_call_start).total_seconds()
+            record_metric(
+                "twilio_elevenlabs_call_duration_seconds",
+                twilio_call_duration,
+                tags={"phone_number": elevenlabs_request.phone_number},
+                correlation_id=correlation_id
+            )
+            
+            logger.debug(
+                f"Successfully created ElevenLabs Twilio call",
+                extra={
+                    "call_sid": response["sid"],
+                    "phone_number": elevenlabs_request.phone_number,
+                    "twilio_call_duration_seconds": round(twilio_call_duration, 3),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            # Step 2: Register call for graceful shutdown tracking
+            call_id = response["sid"]
+            try:
+                from app.main import register_call
+                register_call(call_id)
+                logger.debug(f"Registered ElevenLabs call for shutdown tracking: {call_id}")
+            except ImportError:
+                logger.debug("Could not register call for shutdown tracking")
+            
+            # Step 3: Create call result
+            call_result = CallResult(
+                call_sid=response["sid"],
+                join_url=None,  # ElevenLabs calls don't have join URLs
+                status=CallStatus.INITIATED,
+                created_at=datetime.now(timezone.utc),
+                agent_id=f"elevenlabs_{elevenlabs_request.voice_id}",
+                phone_number=elevenlabs_request.phone_number
+            )
+            
+            # Record successful call initiation metrics
+            total_duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            record_metric(
+                "elevenlabs_call_success_total",
+                1,
+                tags={"voice_id": elevenlabs_request.voice_id},
+                correlation_id=correlation_id
+            )
+            
+            logger.info(
+                f"ElevenLabs call created successfully: {call_result.call_sid}",
+                extra={
+                    "call_sid": call_result.call_sid,
+                    "voice_id": elevenlabs_request.voice_id,
+                    "phone_number": elevenlabs_request.phone_number,
+                    "total_duration_seconds": round(total_duration, 3),
+                    "correlation_id": correlation_id
+                }
+            )
+            return call_result
+            
+        except Exception as e:
+            # Record failure metrics
+            total_duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            record_metric(
+                "elevenlabs_call_failures_total",
+                1,
+                tags={
+                    "voice_id": elevenlabs_request.voice_id,
+                    "error_type": type(e).__name__
+                },
+                correlation_id=correlation_id
+            )
+            
+            # If call registration happened but call failed, unregister it
+            if call_id:
+                try:
+                    from app.main import unregister_call
+                    unregister_call(call_id)
+                    logger.debug(f"Unregistered failed ElevenLabs call: {call_id}")
+                except ImportError:
+                    pass
+            
+            logger.error(
+                f"ElevenLabs call creation failed: {str(e)}",
+                extra={
+                    "voice_id": elevenlabs_request.voice_id,
+                    "phone_number": elevenlabs_request.phone_number,
+                    "error_type": type(e).__name__,
+                    "total_duration_seconds": round(total_duration, 3),
+                    "correlation_id": correlation_id
+                },
+                exc_info=True
+            )
+            raise CallServiceError(
+                f"Failed to create ElevenLabs call: {str(e)}",
+                details={
+                    'voice_id': elevenlabs_request.voice_id,
+                    'phone_number': elevenlabs_request.phone_number,
+                    'error_type': type(e).__name__
+                }
+            )
+    
+    def _create_audio_playback_twiml(self, audio_file_path: str) -> str:
+        """
+        Create TwiML for playing an audio file.
+        
+        Args:
+            audio_file_path: Path to audio file
+            
+        Returns:
+            str: TwiML XML string
+            
+        Note:
+            In production, you should upload the audio file to a publicly accessible URL
+            (like AWS S3, Google Cloud Storage, etc.) and use that URL in the Play element.
+            For development/testing, this creates a placeholder TwiML.
+        """
+        # For now, create a simple Say element as a fallback
+        # In production, you'd replace this with a proper audio URL
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">This is a placeholder for ElevenLabs generated audio. In production, this would play the generated speech.</Say>
+    <Hangup/>
+</Response>"""
+        
+        logger.debug("Created TwiML for audio playback (placeholder)")
+        logger.warning(
+            "Audio playback TwiML is using placeholder. "
+            "In production, upload audio to public URL and use <Play> element."
+        )
+        return twiml
+
+    async def _initiate_elevenlabs_conversational_call(
+        self, 
+        elevenlabs_request: 'ElevenLabsConversationalCallRequest'
+    ) -> CallResult:
+        """
+        Handle ElevenLabs conversational call flow.
+        
+        Args:
+            elevenlabs_request: ElevenLabs conversational call request
+            
+        Returns:
+            CallResult: Call result
+            
+        Raises:
+            CallServiceError: For call orchestration errors
+        """
+        from app.metrics import record_metric
+        from app.logging_config import get_correlation_id
+        
+        correlation_id = get_correlation_id()
+        start_time = datetime.now(timezone.utc)
+        conversation_id = None
+        call_id = None
+        
+        try:
+            logger.info(
+                f"Initiating ElevenLabs conversational call to {elevenlabs_request.phone_number}",
+                extra={
+                    "agent_id": elevenlabs_request.agent_id,
+                    "phone_number": elevenlabs_request.phone_number,
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            # Record call initiation attempt
+            record_metric(
+                "elevenlabs_conversational_call_attempts_total",
+                1,
+                tags={"agent_id": elevenlabs_request.agent_id},
+                correlation_id=correlation_id
+            )
+            
+            # Step 1: Create conversation
+            logger.debug("Step 1: Creating ElevenLabs conversation")
+            conversation_start = datetime.now(timezone.utc)
+            
+            conversation = await self.elevenlabs_conversation_service.create_conversation(
+                elevenlabs_request.agent_id
+            )
+            conversation_id = conversation.id
+            
+            conversation_duration = (datetime.now(timezone.utc) - conversation_start).total_seconds()
+            record_metric(
+                "elevenlabs_conversation_creation_duration_seconds",
+                conversation_duration,
+                tags={"agent_id": elevenlabs_request.agent_id},
+                correlation_id=correlation_id
+            )
+            
+            logger.debug(
+                f"Successfully created conversation: {conversation_id}",
+                extra={
+                    "conversation_id": conversation_id,
+                    "agent_id": elevenlabs_request.agent_id,
+                    "conversation_duration_seconds": round(conversation_duration, 3),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            # Step 2: Start phone call
+            logger.debug("Step 2: Starting ElevenLabs phone call")
+            phone_call_start = datetime.now(timezone.utc)
+            
+            call_result = await self.elevenlabs_conversation_service.start_phone_call(
+                conversation_id,
+                elevenlabs_request.phone_number
+            )
+            call_id = call_result.call_sid
+            
+            phone_call_duration = (datetime.now(timezone.utc) - phone_call_start).total_seconds()
+            record_metric(
+                "elevenlabs_phone_call_initiation_duration_seconds",
+                phone_call_duration,
+                tags={"agent_id": elevenlabs_request.agent_id},
+                correlation_id=correlation_id
+            )
+            
+            logger.debug(
+                f"Successfully started phone call: {call_id}",
+                extra={
+                    "call_sid": call_id,
+                    "conversation_id": conversation_id,
+                    "phone_call_duration_seconds": round(phone_call_duration, 3),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            # Step 3: Register call for graceful shutdown tracking
+            try:
+                from app.main import register_call
+                register_call(call_id)
+                logger.debug(f"Registered ElevenLabs conversational call for shutdown tracking: {call_id}")
+            except ImportError:
+                logger.debug("Could not register call for shutdown tracking")
+            
+            # Step 4: Create enhanced call result
+            enhanced_call_result = CallResult(
+                call_sid=call_result.call_sid,
+                join_url="",  # ElevenLabs handles connection internally
+                status=call_result.status,
+                created_at=call_result.created_at,
+                agent_id=elevenlabs_request.agent_id,
+                phone_number=elevenlabs_request.phone_number
+            )
+            
+            # Record successful call initiation metrics
+            total_duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            record_metric(
+                "elevenlabs_conversational_call_success_total",
+                1,
+                tags={"agent_id": elevenlabs_request.agent_id},
+                correlation_id=correlation_id
+            )
+            
+            record_metric(
+                "elevenlabs_conversational_call_duration_seconds",
+                total_duration,
+                tags={
+                    "agent_id": elevenlabs_request.agent_id,
+                    "success": "true"
+                },
+                correlation_id=correlation_id
+            )
+            
+            logger.info(
+                f"ElevenLabs conversational call initiated successfully: {call_id}",
+                extra={
+                    "call_sid": call_id,
+                    "conversation_id": conversation_id,
+                    "agent_id": elevenlabs_request.agent_id,
+                    "phone_number": elevenlabs_request.phone_number,
+                    "total_duration_seconds": round(total_duration, 3),
+                    "conversation_duration_seconds": round(conversation_duration, 3),
+                    "phone_call_duration_seconds": round(phone_call_duration, 3),
+                    "correlation_id": correlation_id
+                }
+            )
+            
+            return enhanced_call_result
+            
+        except Exception as e:
+            # Record failure metrics
+            total_duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            record_metric(
+                "elevenlabs_conversational_call_failures_total",
+                1,
+                tags={
+                    "agent_id": elevenlabs_request.agent_id,
+                    "error_type": type(e).__name__
+                },
+                correlation_id=correlation_id
+            )
+            
+            record_metric(
+                "elevenlabs_conversational_call_duration_seconds",
+                total_duration,
+                tags={
+                    "agent_id": elevenlabs_request.agent_id,
+                    "success": "false",
+                    "error_type": type(e).__name__
+                },
+                correlation_id=correlation_id
+            )
+            
+            # Cleanup on failure
+            if conversation_id:
+                try:
+                    await self.elevenlabs_conversation_service.end_conversation(conversation_id)
+                    logger.debug(f"Cleaned up failed conversation: {conversation_id}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup conversation {conversation_id}: {cleanup_error}")
+            
+            if call_id:
+                try:
+                    from app.main import unregister_call
+                    unregister_call(call_id)
+                    logger.debug(f"Unregistered failed ElevenLabs call: {call_id}")
+                except ImportError:
+                    pass
+            
+            logger.error(
+                f"ElevenLabs conversational call initiation failed: {str(e)}",
+                extra={
+                    "agent_id": elevenlabs_request.agent_id,
+                    "phone_number": elevenlabs_request.phone_number,
+                    "conversation_id": conversation_id,
+                    "error_type": type(e).__name__,
+                    "total_duration_seconds": round(total_duration, 3),
+                    "correlation_id": correlation_id
+                },
+                exc_info=True
+            )
+            
+            raise CallServiceError(
+                f"Failed to initiate ElevenLabs conversational call: {str(e)}",
+                details={
+                    'agent_id': elevenlabs_request.agent_id,
+                    'phone_number': elevenlabs_request.phone_number,
+                    'conversation_id': conversation_id,
+                    'error_type': type(e).__name__
+                }
+            )
+
     def complete_call(self, call_sid: str):
         """
         Mark a call as completed and unregister it from tracking.

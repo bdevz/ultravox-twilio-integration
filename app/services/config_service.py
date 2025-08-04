@@ -7,6 +7,7 @@ import logging
 from typing import Optional, Dict, Any
 from pydantic import ValidationError
 from app.models.config import UltravoxConfig, TwilioConfig, AppConfig
+from app.models.elevenlabs import ElevenLabsConfig
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class ConfigService:
         self._config: Optional[AppConfig] = None
         self._ultravox_config: Optional[UltravoxConfig] = None
         self._twilio_config: Optional[TwilioConfig] = None
+        self._elevenlabs_config: Optional[ElevenLabsConfig] = None
     
     def load_configuration(self) -> AppConfig:
         """
@@ -42,6 +44,13 @@ class ConfigService:
         try:
             ultravox_config = self.get_ultravox_config()
             twilio_config = self.get_twilio_config()
+            
+            # ElevenLabs config is optional
+            elevenlabs_config = None
+            try:
+                elevenlabs_config = self.get_elevenlabs_config()
+            except ConfigurationError as e:
+                logger.info(f"ElevenLabs configuration not available: {e.message}")
             
             # Load application-level settings
             debug = self._get_env_bool("DEBUG", default=False)
@@ -133,6 +142,67 @@ class ConfigService:
                 "Invalid Twilio configuration",
                 details=error_details
             )
+    
+    def get_elevenlabs_config(self) -> ElevenLabsConfig:
+        """
+        Load and validate ElevenLabs configuration.
+        
+        Returns:
+            ElevenLabsConfig: Validated ElevenLabs configuration
+            
+        Raises:
+            ConfigurationError: If ElevenLabs configuration is invalid or missing
+        """
+        if self._elevenlabs_config is not None:
+            return self._elevenlabs_config
+        
+        try:
+            # Check if ElevenLabs is enabled
+            if not self._get_env_bool("ENABLE_ELEVENLABS", default=False):
+                raise ConfigurationError("ElevenLabs integration is disabled")
+            
+            api_key = self._get_required_env("ELEVENLABS_API_KEY")
+            base_url = os.getenv("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io")
+            default_voice_id = os.getenv("ELEVENLABS_DEFAULT_VOICE", "21m00Tcm4TlvDq8ikWAM")
+            max_text_length = int(os.getenv("ELEVENLABS_MAX_TEXT_LENGTH", "5000"))
+            request_timeout = float(os.getenv("ELEVENLABS_REQUEST_TIMEOUT", "30.0"))
+            enable_preview = self._get_env_bool("ELEVENLABS_PREVIEW_ENABLED", default=True)
+            
+            self._elevenlabs_config = ElevenLabsConfig(
+                api_key=api_key,
+                base_url=base_url,
+                default_voice_id=default_voice_id,
+                max_text_length=max_text_length,
+                request_timeout=request_timeout,
+                enable_preview=enable_preview
+            )
+            
+            logger.debug("ElevenLabs configuration loaded")
+            return self._elevenlabs_config
+            
+        except ValidationError as e:
+            error_details = self._format_validation_errors(e)
+            raise ConfigurationError(
+                "Invalid ElevenLabs configuration",
+                details=error_details
+            )
+        except ValueError as e:
+            raise ConfigurationError(
+                f"Invalid ElevenLabs configuration value: {str(e)}"
+            )
+    
+    def is_elevenlabs_enabled(self) -> bool:
+        """
+        Check if ElevenLabs integration is enabled and configured.
+        
+        Returns:
+            bool: True if ElevenLabs is enabled and configured
+        """
+        try:
+            self.get_elevenlabs_config()
+            return True
+        except ConfigurationError:
+            return False
     
     def validate_configuration(self) -> bool:
         """

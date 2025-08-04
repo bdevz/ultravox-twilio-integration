@@ -212,3 +212,19 @@ class TimeoutError(BaseServiceException):
             details=details,
             status_code=504
         )
+
+
+# ElevenLabs-specific exceptions
+try:
+    from app.exceptions.elevenlabs_exceptions import (
+        ElevenLabsAPIError,
+        VoiceNotFoundError,
+        TextTooLongError,
+        QuotaExceededError,
+        VoiceGenerationError,
+        ElevenLabsConfigurationError,
+        AudioProcessingError
+    )
+except ImportError:
+    # ElevenLabs exceptions not available - this is fine if ElevenLabs is not configured
+    pass
